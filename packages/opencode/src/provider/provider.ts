@@ -14,6 +14,42 @@ import { Instance } from "../project/instance"
 import { Flag } from "../flag/flag"
 import { iife } from "@/util/iife"
 
+// Azure SPN authentication proxy helper
+// This fetch wrapper only uses proxy for Microsoft login endpoints during token acquisition
+function createAzureAuthFetch(proxyUrl: string) {
+  const originalFetch = globalThis.fetch
+  const AUTH_HOSTS = [
+    "login.microsoftonline.com",
+    "login.windows.net",
+    "login.microsoft.com",
+    "login.partner.microsoftonline.cn"
+  ]
+
+  return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = input.toString()
+    const isAuthEndpoint = AUTH_HOSTS.some(host => url.includes(host))
+
+    if (isAuthEndpoint && proxyUrl) {
+      // Temporarily set HTTPS_PROXY for authentication requests
+      const originalProxy = process.env.HTTPS_PROXY
+      try {
+        process.env.HTTPS_PROXY = proxyUrl
+        return await originalFetch(input, init)
+      } finally {
+        // Restore original proxy setting
+        if (originalProxy) {
+          process.env.HTTPS_PROXY = originalProxy
+        } else {
+          delete process.env.HTTPS_PROXY
+        }
+      }
+    }
+
+    // For non-auth endpoints, use normal fetch without proxy
+    return originalFetch(input, init)
+  }
+}
+
 // Direct imports for bundled providers
 import { createAmazonBedrock, type AmazonBedrockProviderSettings } from "@ai-sdk/amazon-bedrock"
 import { createAnthropic } from "@ai-sdk/anthropic"
@@ -170,6 +206,9 @@ export namespace Provider {
       // SPN credentials take precedence over API key if both are available
       const useSpnAuth = hasSpnCredentials
 
+      // Get proxy URL for Azure SPN authentication (only used during token acquisition)
+      const authProxyUrl = Env.get("AZURE_AUTH_PROXY_URL")
+
       return {
         autoload: hasSpnCredentials || hasApiKey, // Auto-load if either authentication method is available
         async getModel(sdk: any, modelID: string, options?: Record<string, any>) {
@@ -190,7 +229,11 @@ export namespace Provider {
             }
           } : {
             apiKey
-          })
+          }),
+          // Use proxy-aware fetch for SPN authentication if proxy is configured
+          ...(useSpnAuth && authProxyUrl ? {
+            fetch: createAzureAuthFetch(authProxyUrl)
+          } : {})
         },
       }
     },

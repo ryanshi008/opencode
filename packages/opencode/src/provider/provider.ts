@@ -149,8 +149,29 @@ export namespace Provider {
       }
     },
     azure: async () => {
+      // Get SPN credentials from environment variables
+      const clientId = Env.get("AZURE_CLIENT_ID")
+      const clientSecret = Env.get("AZURE_CLIENT_SECRET")
+      const tenantId = Env.get("AZURE_TENANT_ID")
+
+      // Check if we have SPN credentials
+      const hasSpnCredentials = clientId && clientSecret && tenantId
+
+      // Check if we have traditional API key authentication
+      const auth = await Auth.get("azure")
+      const apiKey = await (async () => {
+        if (auth?.type === "api") return auth.key
+        return Env.get("AZURE_OPENAI_API_KEY")
+      })()
+
+      const hasApiKey = !!apiKey
+
+      // Determine authentication method to use
+      // SPN credentials take precedence over API key if both are available
+      const useSpnAuth = hasSpnCredentials
+
       return {
-        autoload: false,
+        autoload: hasSpnCredentials || hasApiKey, // Auto-load if either authentication method is available
         async getModel(sdk: any, modelID: string, options?: Record<string, any>) {
           if (options?.["useCompletionUrls"]) {
             return sdk.chat(modelID)
@@ -158,7 +179,19 @@ export namespace Provider {
             return sdk.responses(modelID)
           }
         },
-        options: {},
+        options: {
+          // Pass SPN credentials if available, otherwise use API key
+          ...(useSpnAuth ? {
+            // For SPN authentication, we pass the credentials directly to createAzure
+            azure: {
+              clientId,
+              clientSecret,
+              tenantId
+            }
+          } : {
+            apiKey
+          })
+        },
       }
     },
     "azure-cognitive-services": async () => {
